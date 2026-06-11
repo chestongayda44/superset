@@ -150,7 +150,9 @@ class DashboardDAO(BaseDAO[Dashboard]):
                 .filter(id_or_slug_filter(id_or_slug))
                 .outerjoin(Dashboard.owners)
                 .outerjoin(Dashboard.roles)
-                .options(selectinload(Dashboard.slices).selectinload(Slice.table))
+                .options(
+                    selectinload(Dashboard.slices).selectinload(Slice.table),
+                )
             )
             if eager_load_datasets:
                 query = query.options(*cls._dataset_eager_load_options())

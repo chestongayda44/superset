@@ -436,7 +436,9 @@ class Dashboard(CoreDashboard, AuditMixinNullable, ImportExportMixin):
         qry = (
             db.session.query(Dashboard)
             .filter(id_or_slug_filter(id_or_slug))
-            .options(selectinload(Dashboard.slices).selectinload(Slice.table))
+            .options(
+                selectinload(Dashboard.slices).selectinload(Slice.table),
+            )
         )
         if eager_load_datasets:
             qry = qry.options(
