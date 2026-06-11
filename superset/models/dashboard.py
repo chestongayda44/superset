@@ -432,14 +432,28 @@ class Dashboard(CoreDashboard, AuditMixinNullable, ImportExportMixin):
         cls,
         id_or_slug: str | int,
         eager_load_datasets: bool = False,
+        eager_load_detail: bool = False,
+        skip_table_load: bool = False,
     ) -> Dashboard:
+        if skip_table_load:
+            slice_opt = selectinload(Dashboard.slices).lazyload(Slice.table)
+        else:
+            slice_opt = (
+                selectinload(Dashboard.slices)
+                .selectinload(Slice.table)
+                .selectinload(SqlaTable.database)
+            )
         qry = (
             db.session.query(Dashboard)
             .filter(id_or_slug_filter(id_or_slug))
-            .options(
-                selectinload(Dashboard.slices).selectinload(Slice.table),
-            )
+            .options(slice_opt)
         )
+        if eager_load_detail:
+            qry = qry.options(
+                selectinload(Dashboard.owners),
+                selectinload(Dashboard.tags),
+                selectinload(Dashboard.custom_tags),
+            )
         if eager_load_datasets:
             qry = qry.options(
                 selectinload(Dashboard.slices)
@@ -448,9 +462,6 @@ class Dashboard(CoreDashboard, AuditMixinNullable, ImportExportMixin):
                 selectinload(Dashboard.slices)
                 .selectinload(Slice.table)
                 .selectinload(SqlaTable.metrics),
-                selectinload(Dashboard.slices)
-                .selectinload(Slice.table)
-                .selectinload(SqlaTable.database),
                 selectinload(Dashboard.slices)
                 .selectinload(Slice.table)
                 .selectinload(SqlaTable.owners),

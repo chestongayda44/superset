@@ -138,22 +138,35 @@ class DashboardDAO(BaseDAO[Dashboard]):
         cls,
         id_or_slug: int | str,
         eager_load_datasets: bool = False,
+        eager_load_detail: bool = False,
+        skip_table_load: bool = False,
     ) -> Dashboard:
+        from superset.connectors.sqla.models import SqlaTable
+
         if is_uuid(id_or_slug):
             # just get dashboard if it's uuid
             dashboard = Dashboard.get(
-                id_or_slug, eager_load_datasets=eager_load_datasets
+                id_or_slug,
+                eager_load_datasets=eager_load_datasets,
+                eager_load_detail=eager_load_detail,
+                skip_table_load=skip_table_load,
             )
         else:
+            if skip_table_load:
+                slice_opt = selectinload(Dashboard.slices).lazyload(Slice.table)
+            else:
+                slice_opt = (
+                    selectinload(Dashboard.slices)
+                    .selectinload(Slice.table)
+                    .selectinload(SqlaTable.database)
+                )
             query = (
                 db.session.query(Dashboard)
                 .filter(id_or_slug_filter(id_or_slug))
-                .outerjoin(Dashboard.owners)
-                .outerjoin(Dashboard.roles)
-                .options(
-                    selectinload(Dashboard.slices).selectinload(Slice.table),
-                )
+                .options(slice_opt)
             )
+            if eager_load_detail:
+                query = query.options(*cls._detail_eager_load_options())
             if eager_load_datasets:
                 query = query.options(*cls._dataset_eager_load_options())
             # Apply dashboard base filters
@@ -173,10 +186,28 @@ class DashboardDAO(BaseDAO[Dashboard]):
         return dashboard
 
     @staticmethod
+    def _detail_eager_load_options() -> list[Load]:
+        """Loader options for the dashboard-detail serialisation path.
+
+        Batch-fetches relationships accessed by DashboardGetResponseSchema
+        (owners, tags, custom_tags, roles, changed_by, created_by) so the
+        schema dump does not trigger per-entity lazy loads.
+        """
+        return [
+            selectinload(Dashboard.owners),
+            selectinload(Dashboard.tags),
+            selectinload(Dashboard.custom_tags),
+            selectinload(Dashboard.roles),
+            selectinload(Dashboard.changed_by),
+            selectinload(Dashboard.created_by),
+        ]
+
+    @staticmethod
     def _dataset_eager_load_options() -> list[Load]:
         """SQLAlchemy loader options to batch-fetch the dataset relationship
-        graph (columns, metrics, database, owners) needed by the datasets
-        endpoint to avoid per-entity lazy loads.
+        graph (columns, metrics, owners) needed by the datasets endpoint
+        to avoid per-entity lazy loads.  The database relationship is
+        already loaded by the base query in get_by_id_or_slug.
         """
         from superset.connectors.sqla.models import SqlaTable
 
@@ -187,9 +218,6 @@ class DashboardDAO(BaseDAO[Dashboard]):
             selectinload(Dashboard.slices)
             .selectinload(Slice.table)
             .selectinload(SqlaTable.metrics),
-            selectinload(Dashboard.slices)
-            .selectinload(Slice.table)
-            .selectinload(SqlaTable.database),
             selectinload(Dashboard.slices)
             .selectinload(Slice.table)
             .selectinload(SqlaTable.owners),
@@ -207,7 +235,7 @@ class DashboardDAO(BaseDAO[Dashboard]):
 
     @staticmethod
     def get_charts_for_dashboard(id_or_slug: str) -> list[Slice]:
-        return DashboardDAO.get_by_id_or_slug(id_or_slug).slices
+        return DashboardDAO.get_by_id_or_slug(id_or_slug, skip_table_load=True).slices
 
     @staticmethod
     def get_dashboard_changed_on(id_or_slug_or_dashboard: str | Dashboard) -> datetime:
