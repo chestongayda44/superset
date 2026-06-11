@@ -38,7 +38,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.engine.base import Connection
-from sqlalchemy.orm import relationship, subqueryload
+from sqlalchemy.orm import relationship, selectinload, subqueryload
 from sqlalchemy.orm.mapper import Mapper
 from sqlalchemy.sql.elements import BinaryExpression
 from superset_core.common.models import Dashboard as CoreDashboard
@@ -428,8 +428,31 @@ class Dashboard(CoreDashboard, AuditMixinNullable, ImportExportMixin):
         )
 
     @classmethod
-    def get(cls, id_or_slug: str | int) -> Dashboard:
-        qry = db.session.query(Dashboard).filter(id_or_slug_filter(id_or_slug))
+    def get(
+        cls,
+        id_or_slug: str | int,
+        eager_load_datasets: bool = False,
+    ) -> Dashboard:
+        qry = (
+            db.session.query(Dashboard)
+            .filter(id_or_slug_filter(id_or_slug))
+            .options(selectinload(Dashboard.slices).selectinload(Slice.table))
+        )
+        if eager_load_datasets:
+            qry = qry.options(
+                selectinload(Dashboard.slices)
+                .selectinload(Slice.table)
+                .selectinload(SqlaTable.columns),
+                selectinload(Dashboard.slices)
+                .selectinload(Slice.table)
+                .selectinload(SqlaTable.metrics),
+                selectinload(Dashboard.slices)
+                .selectinload(Slice.table)
+                .selectinload(SqlaTable.database),
+                selectinload(Dashboard.slices)
+                .selectinload(Slice.table)
+                .selectinload(SqlaTable.owners),
+            )
         return qry.one_or_none()
 
     def raise_for_access(self) -> None:

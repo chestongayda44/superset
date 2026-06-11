@@ -24,7 +24,8 @@ from typing import Any, Dict, List
 from flask import g
 from flask_appbuilder.models.sqla.interface import SQLAInterface
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Query
+from sqlalchemy.orm import Query, selectinload
+from sqlalchemy.orm.strategy_options import Load
 
 from superset import is_feature_enabled, security_manager
 from superset.commands.dashboard.exceptions import (
@@ -133,17 +134,26 @@ class DashboardDAO(BaseDAO[Dashboard]):
         return filterable
 
     @classmethod
-    def get_by_id_or_slug(cls, id_or_slug: int | str) -> Dashboard:
+    def get_by_id_or_slug(
+        cls,
+        id_or_slug: int | str,
+        eager_load_datasets: bool = False,
+    ) -> Dashboard:
         if is_uuid(id_or_slug):
             # just get dashboard if it's uuid
-            dashboard = Dashboard.get(id_or_slug)
+            dashboard = Dashboard.get(
+                id_or_slug, eager_load_datasets=eager_load_datasets
+            )
         else:
             query = (
                 db.session.query(Dashboard)
                 .filter(id_or_slug_filter(id_or_slug))
                 .outerjoin(Dashboard.owners)
                 .outerjoin(Dashboard.roles)
+                .options(selectinload(Dashboard.slices).selectinload(Slice.table))
             )
+            if eager_load_datasets:
+                query = query.options(*cls._dataset_eager_load_options())
             # Apply dashboard base filters
             query = cls.base_filter("id", SQLAInterface(Dashboard, db.session)).apply(
                 query, None
@@ -161,8 +171,31 @@ class DashboardDAO(BaseDAO[Dashboard]):
         return dashboard
 
     @staticmethod
+    def _dataset_eager_load_options() -> list[Load]:
+        """SQLAlchemy loader options to batch-fetch the dataset relationship
+        graph (columns, metrics, database, owners) needed by the datasets
+        endpoint to avoid per-entity lazy loads.
+        """
+        from superset.connectors.sqla.models import SqlaTable
+
+        return [
+            selectinload(Dashboard.slices)
+            .selectinload(Slice.table)
+            .selectinload(SqlaTable.columns),
+            selectinload(Dashboard.slices)
+            .selectinload(Slice.table)
+            .selectinload(SqlaTable.metrics),
+            selectinload(Dashboard.slices)
+            .selectinload(Slice.table)
+            .selectinload(SqlaTable.database),
+            selectinload(Dashboard.slices)
+            .selectinload(Slice.table)
+            .selectinload(SqlaTable.owners),
+        ]
+
+    @staticmethod
     def get_datasets_for_dashboard(id_or_slug: str) -> list[tuple[Any, dict[str, Any]]]:
-        dashboard = DashboardDAO.get_by_id_or_slug(id_or_slug)
+        dashboard = DashboardDAO.get_by_id_or_slug(id_or_slug, eager_load_datasets=True)
         return dashboard.datasets_trimmed_for_slices()
 
     @staticmethod
