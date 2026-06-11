@@ -1,0 +1,20 @@
+name: Perf Sentinel — trigger on perf-regression label
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  trigger-perf-sentinel:
+    if: >
+      github.event.label.name == 'perf-regression' ||
+      github.event.label.name == 'perf-sentinel' ||
+      github.event.label.name == 'performance'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Call Perf Sentinel orchestrator
+        run: |
+          curl -X POST \
+            "${{ secrets.PERF_SENTINEL_URL }}/trigger/${{ github.event.issue.number }}" \
+            -H "Content-Type: application/json"
