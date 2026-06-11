@@ -19,7 +19,7 @@ import functools
 import logging
 from datetime import datetime
 from io import BytesIO
-from typing import Any, Callable, cast
+from typing import Any, Callable, cast, overload
 from zipfile import is_zipfile, ZipFile
 
 import rison
@@ -158,25 +158,58 @@ from superset.views.filters import (
 logger = logging.getLogger(__name__)
 
 
+_DashboardViewFunc = Callable[[BaseSupersetModelRestApi, Dashboard], Response]
+_WrappedFunc = Callable[[BaseSupersetModelRestApi, str], Response]
+
+
+@overload
 def with_dashboard(
-    f: Callable[[BaseSupersetModelRestApi, Dashboard], Response],
-) -> Callable[[BaseSupersetModelRestApi, str], Response]:
+    f: _DashboardViewFunc,
+) -> _WrappedFunc: ...
+
+
+@overload
+def with_dashboard(
+    *,
+    eager_load_detail: bool = ...,
+) -> Callable[[_DashboardViewFunc], _WrappedFunc]: ...
+
+
+def with_dashboard(
+    f: _DashboardViewFunc | None = None,
+    *,
+    eager_load_detail: bool = False,
+) -> _WrappedFunc | Callable[[_DashboardViewFunc], _WrappedFunc]:
     """
     A decorator that looks up the dashboard by id or slug and passes it to the api.
     Route must include an <id_or_slug> parameter.
     Responds with 403 or 404 without calling the route, if necessary.
+
+    When ``eager_load_detail=True``, relationships that the dashboard-detail
+    schema serialises (owners, tags, etc.) are batch-loaded upfront so the
+    schema dump does not trigger per-entity lazy loads.
     """
 
-    def wraps(self: BaseSupersetModelRestApi, id_or_slug: str) -> Response:
-        try:
-            dash = DashboardDAO.get_by_id_or_slug(id_or_slug)
-            return f(self, dash)
-        except DashboardAccessDeniedError:
-            return self.response_403()
-        except DashboardNotFoundError:
-            return self.response_404()
+    def decorator(
+        fn: _DashboardViewFunc,
+    ) -> _WrappedFunc:
+        def wraps(self: BaseSupersetModelRestApi, id_or_slug: str) -> Response:
+            try:
+                dash = DashboardDAO.get_by_id_or_slug(
+                    id_or_slug,
+                    eager_load_detail=eager_load_detail,
+                )
+                return fn(self, dash)
+            except DashboardAccessDeniedError:
+                return self.response_403()
+            except DashboardNotFoundError:
+                return self.response_404()
 
-    return functools.update_wrapper(wraps, f)
+        return functools.update_wrapper(wraps, fn)
+
+    if f is not None:
+        return decorator(f)
+    return decorator
 
 
 # Base columns (everything except tags)
@@ -456,7 +489,7 @@ class DashboardRestApi(CustomTagsOptimizationMixin, BaseSupersetModelRestApi):
     @protect()
     @safe
     @statsd_metrics
-    @with_dashboard
+    @with_dashboard(eager_load_detail=True)
     @event_logger.log_this_with_extra_payload
     # pylint: disable=arguments-differ,arguments-renamed
     def get(

@@ -24,7 +24,8 @@ from typing import Any, Dict, List
 from flask import g
 from flask_appbuilder.models.sqla.interface import SQLAInterface
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Query
+from sqlalchemy.orm import Query, selectinload
+from sqlalchemy.orm.strategy_options import Load
 
 from superset import is_feature_enabled, security_manager
 from superset.commands.dashboard.exceptions import (
@@ -133,17 +134,41 @@ class DashboardDAO(BaseDAO[Dashboard]):
         return filterable
 
     @classmethod
-    def get_by_id_or_slug(cls, id_or_slug: int | str) -> Dashboard:
+    def get_by_id_or_slug(
+        cls,
+        id_or_slug: int | str,
+        eager_load_datasets: bool = False,
+        eager_load_detail: bool = False,
+        skip_table_load: bool = False,
+    ) -> Dashboard:
+        from superset.connectors.sqla.models import SqlaTable
+
         if is_uuid(id_or_slug):
             # just get dashboard if it's uuid
-            dashboard = Dashboard.get(id_or_slug)
+            dashboard = Dashboard.get(
+                id_or_slug,
+                eager_load_datasets=eager_load_datasets,
+                eager_load_detail=eager_load_detail,
+                skip_table_load=skip_table_load,
+            )
         else:
+            if skip_table_load:
+                slice_opt = selectinload(Dashboard.slices).lazyload(Slice.table)
+            else:
+                slice_opt = (
+                    selectinload(Dashboard.slices)
+                    .selectinload(Slice.table)
+                    .selectinload(SqlaTable.database)
+                )
             query = (
                 db.session.query(Dashboard)
                 .filter(id_or_slug_filter(id_or_slug))
-                .outerjoin(Dashboard.owners)
-                .outerjoin(Dashboard.roles)
+                .options(slice_opt)
             )
+            if eager_load_detail:
+                query = query.options(*cls._detail_eager_load_options())
+            if eager_load_datasets:
+                query = query.options(*cls._dataset_eager_load_options())
             # Apply dashboard base filters
             query = cls.base_filter("id", SQLAInterface(Dashboard, db.session)).apply(
                 query, None
@@ -161,8 +186,46 @@ class DashboardDAO(BaseDAO[Dashboard]):
         return dashboard
 
     @staticmethod
+    def _detail_eager_load_options() -> list[Load]:
+        """Loader options for the dashboard-detail serialisation path.
+
+        Batch-fetches relationships accessed by DashboardGetResponseSchema
+        (owners, tags, custom_tags, roles, changed_by, created_by) so the
+        schema dump does not trigger per-entity lazy loads.
+        """
+        return [
+            selectinload(Dashboard.owners),
+            selectinload(Dashboard.tags),
+            selectinload(Dashboard.custom_tags),
+            selectinload(Dashboard.roles),
+            selectinload(Dashboard.changed_by),
+            selectinload(Dashboard.created_by),
+        ]
+
+    @staticmethod
+    def _dataset_eager_load_options() -> list[Load]:
+        """SQLAlchemy loader options to batch-fetch the dataset relationship
+        graph (columns, metrics, owners) needed by the datasets endpoint
+        to avoid per-entity lazy loads.  The database relationship is
+        already loaded by the base query in get_by_id_or_slug.
+        """
+        from superset.connectors.sqla.models import SqlaTable
+
+        return [
+            selectinload(Dashboard.slices)
+            .selectinload(Slice.table)
+            .selectinload(SqlaTable.columns),
+            selectinload(Dashboard.slices)
+            .selectinload(Slice.table)
+            .selectinload(SqlaTable.metrics),
+            selectinload(Dashboard.slices)
+            .selectinload(Slice.table)
+            .selectinload(SqlaTable.owners),
+        ]
+
+    @staticmethod
     def get_datasets_for_dashboard(id_or_slug: str) -> list[tuple[Any, dict[str, Any]]]:
-        dashboard = DashboardDAO.get_by_id_or_slug(id_or_slug)
+        dashboard = DashboardDAO.get_by_id_or_slug(id_or_slug, eager_load_datasets=True)
         return dashboard.datasets_trimmed_for_slices()
 
     @staticmethod
@@ -172,7 +235,7 @@ class DashboardDAO(BaseDAO[Dashboard]):
 
     @staticmethod
     def get_charts_for_dashboard(id_or_slug: str) -> list[Slice]:
-        return DashboardDAO.get_by_id_or_slug(id_or_slug).slices
+        return DashboardDAO.get_by_id_or_slug(id_or_slug, skip_table_load=True).slices
 
     @staticmethod
     def get_dashboard_changed_on(id_or_slug_or_dashboard: str | Dashboard) -> datetime:
