@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import and_, or_
@@ -27,6 +28,8 @@ from superset.sql.parse import Table
 if TYPE_CHECKING:
     from superset.models.core import Database
     from superset.sql.parse import BaseSQLStatement
+
+logger = logging.getLogger(__name__)
 
 
 def apply_rls(
@@ -180,7 +183,14 @@ def collect_rls_predicates_for_sql(
                 )
             }
         )
-    except Exception:
-        # If we can't parse the SQL, return empty list
-        # This ensures RLS application failure doesn't break caching
+    except Exception:  # pylint: disable=broad-except
+        # If we can't parse the SQL, return an empty list so that failing to
+        # collect predicates doesn't break caching. This is logged because an
+        # empty result silently drops RLS rules from the cache key, which could
+        # let users with different RLS rules share a cache entry.
+        logger.warning(
+            "Could not collect RLS predicates for cache key generation; "
+            "falling back to an empty predicate list",
+            exc_info=True,
+        )
         return []
