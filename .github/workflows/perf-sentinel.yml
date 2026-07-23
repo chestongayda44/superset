@@ -4,6 +4,10 @@ on:
   issues:
     types: [labeled]
 
+# Least privilege: this workflow only makes an outbound call and does not
+# need any access to repository contents or the GITHUB_TOKEN.
+permissions: {}
+
 jobs:
   trigger-perf-sentinel:
     if: >
@@ -14,7 +18,10 @@ jobs:
 
     steps:
       - name: Call Perf Sentinel orchestrator
+        env:
+          PERF_SENTINEL_URL: ${{ secrets.PERF_SENTINEL_URL }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           curl -X POST \
-            "${{ secrets.PERF_SENTINEL_URL }}/trigger/${{ github.event.issue.number }}" \
+            "${PERF_SENTINEL_URL}/trigger/${ISSUE_NUMBER}" \
             -H "Content-Type: application/json"
